@@ -38,6 +38,7 @@ class Node(Module):
     PROC_TIME = "processing"
     # max packet size (bytes)
     MAXSIZE = "maxsize"
+    SENSING_TIME = 50e-6
     RANGE = "range"
 
     # list of possible states for this node
@@ -45,6 +46,7 @@ class Node(Module):
     TX = 1
     RX = 2
     PROC = 3
+    SENSING = 4
 
     def __init__(self, config, channel, x, y):
         """
@@ -83,6 +85,8 @@ class Node(Module):
         # transmit a packet of the maximum size plus a small amount of 10
         # microseconds
         self.timeout_time = self.maxsize * 8.0 / self.datarate + 10e-6
+        # current packet size
+        self.current_packet_size = 0
 
     def initialize(self):
         """
@@ -90,7 +94,7 @@ class Node(Module):
         """
         self.schedule_next_arrival()
 
-    def handle_event(self, event):
+    def handle_event(self, event, packet_size=0):
         """
         Handles events notified to the node
         :param event: the event
@@ -107,6 +111,8 @@ class Node(Module):
             self.handle_end_proc(event)
         elif event.get_type() == Events.RX_TIMEOUT:
             self.handle_rx_timeout(event)
+        elif event.get_type() == Events.SENSING:
+            self.handle_end_carrier_sensing(event)
         else:
             print("Node %d has received a notification for event type %d which"
                   " can't be handled", (self.get_id(), event.get_type()))
@@ -129,17 +135,21 @@ class Node(Module):
         """
         # draw packet size from the distribution
         packet_size = self.size.get_value()
+        self.current_packet_size = packet_size
+        
         # log the arrival
         self.logger.log_arrival(self, packet_size)
         if self.state == Node.IDLE:
             # if we are in a idle state, then there must be no packets in the
             # queue
-            assert(len(self.queue) == 0)
-            # if current state is IDLE and there are no packets in the queue, we
-            # can start transmitting
-            self.transmit_packet(packet_size)
-            self.state = Node.TX
-            self.logger.log_state(self, Node.TX)
+            # assert(len(self.queue) == 0)
+            # if we are in idle state and the queue is not empty, the channel is occupied
+            
+            # perform carrier sensing of duration 50 microseconds
+            self.state = Node.SENSING
+            sensing = Event(self.sim.get_time() + self.SENSING_TIME,
+                       Events.SENSING, self, self)
+            self.sim.schedule_event(sensing)
         else:
             # if we are either transmitting or receiving, packet must be queued
             if self.queue_size == 0 or len(self.queue) < self.queue_size:
@@ -151,6 +161,31 @@ class Node(Module):
                 self.logger.log_queue_drop(self, packet_size)
         # schedule next arrival
         self.schedule_next_arrival()
+
+    def handle_end_carrier_sensing(self, event):
+        # if channel is free, transmit (carrier sensing)
+        packet_size = self.current_packet_size
+        self.state = Node.IDLE
+        
+        busy = 0
+        for neighbor in self.channel.neighbors[self.get_id()]:
+            if (neighbor.state == Node.TX):
+                busy = 1
+                    
+        self.logger.log_sensing(self, busy)
+        
+        if (busy == 0):
+            self.transmit_packet(packet_size)
+            self.state = Node.TX
+            self.logger.log_state(self, Node.TX)
+        else:
+            if self.queue_size == 0 or len(self.queue) < self.queue_size:
+                # if queue size is infinite or there is still space
+                self.queue.append(packet_size)
+                self.logger.log_queue_length(self, len(self.queue))
+            else:
+                # if there is no space left, we drop the packet and log
+                self.logger.log_queue_drop(self, packet_size)
 
     def handle_start_rx(self, event):
         """
@@ -172,6 +207,7 @@ class Node(Module):
                     self.state = Node.RX
                     assert(self.timeout_event is None)
                     # create and schedule the RX timeout
+                    
                     self.timeout_event = Event(self.sim.get_time() +
                                                self.timeout_time, Events.RX_TIMEOUT,
                                                self, self, None)

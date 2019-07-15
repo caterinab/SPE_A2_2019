@@ -27,17 +27,23 @@ class Packet:
     PKT_RECEIVING = 0
     # packet has been correctly received
     PKT_RECEIVED = 1
-    # packet has been corrupted due to, for example, a collision
+    # packet corrupted because of the distance probability model
     PKT_CORRUPTED = 2
+    # packet corrupted because of a collision
+    PKT_COLLIDED = 8
+    
 
-    def __init__(self, size, duration):
+    def __init__(self, size, duration, source_x, source_y):
         """
         Creates a packet automatically assigning a unique ID to it
         :param size: size of the packet in bytes
         :param duration: packet duration in seconds
+        :param source: node that generated the packet
         """
         self.size = size
         self.duration = duration
+        self.source_x = source_x
+        self.source_y = source_y
         self.state = Packet.PKT_RECEIVING
         self.id = Packet.__packets_count
         Packet.__packets_count = Packet.__packets_count + 1
@@ -77,6 +83,20 @@ class Packet:
         """
         return self.duration
 
+    def get_source_x(self):
+        """
+        Returns packet source x
+        :returns: packet source x
+        """
+        return self.source_x
+        
+    def get_source_y(self):
+        """
+        Returns packet source y
+        :returns: packet source y
+        """
+        return self.source_y
+        
     def dump_packet(self):
         """
         Prints the packet in a human readable format
@@ -87,4 +107,6 @@ class Packet:
             t = "CORRECTLY RECEIVED"
         elif self.state == Packet.PKT_CORRUPTED:
             t = "CORRUPTED"
+        elif self.state == Packet.PKT_COLLIDED:
+            t = "COLLIDED"
         print("Packet state: %s\n\n" % t)

@@ -38,14 +38,13 @@ class Node(Module):
     PROC_TIME = "processing"
     # max packet size (bytes)
     MAXSIZE = "maxsize"
-    SENSING_TIME = 50e-6
+    RANGE = "range"
 
     # list of possible states for this node
     IDLE = 0
     TX = 1
     RX = 2
     PROC = 3
-    SENSING = 4
 
     def __init__(self, config, channel, x, y):
         """
@@ -63,6 +62,7 @@ class Node(Module):
         self.size = Distribution(config.get_param(Node.SIZE))
         self.proc_time = Distribution(config.get_param(Node.PROC_TIME))
         self.maxsize = config.get_param(Node.MAXSIZE)
+        self.range = config.get_param(Node.RANGE)
         # queue of packets to be sent
         self.queue = []
         # current state
@@ -83,8 +83,6 @@ class Node(Module):
         # transmit a packet of the maximum size plus a small amount of 10
         # microseconds
         self.timeout_time = self.maxsize * 8.0 / self.datarate + 10e-6
-        # current packet size
-        self.current_packet_size = 0
 
     def initialize(self):
         """
@@ -92,7 +90,7 @@ class Node(Module):
         """
         self.schedule_next_arrival()
 
-    def handle_event(self, event, packet_size=0):
+    def handle_event(self, event):
         """
         Handles events notified to the node
         :param event: the event
@@ -109,8 +107,6 @@ class Node(Module):
             self.handle_end_proc(event)
         elif event.get_type() == Events.RX_TIMEOUT:
             self.handle_rx_timeout(event)
-        elif event.get_type() == Events.SENSING:
-            self.handle_end_carrier_sensing(event)
         else:
             print("Node %d has received a notification for event type %d which"
                   " can't be handled", (self.get_id(), event.get_type()))
@@ -133,21 +129,17 @@ class Node(Module):
         """
         # draw packet size from the distribution
         packet_size = self.size.get_value()
-        self.current_packet_size = packet_size
-        
         # log the arrival
         self.logger.log_arrival(self, packet_size)
         if self.state == Node.IDLE:
             # if we are in a idle state, then there must be no packets in the
             # queue
-            # assert(len(self.queue) == 0)
-            # if we are in idle state and the queue is not empty, the channel is occupied
-            
-            # perform carrier sensing of duration 50 microseconds
-            self.state = Node.SENSING
-            sensing = Event(self.sim.get_time() + self.SENSING_TIME,
-                       Events.SENSING, self, self)
-            self.sim.schedule_event(sensing)
+            assert(len(self.queue) == 0)
+            # if current state is IDLE and there are no packets in the queue, we
+            # can start transmitting
+            self.transmit_packet(packet_size)
+            self.state = Node.TX
+            self.logger.log_state(self, Node.TX)
         else:
             # if we are either transmitting or receiving, packet must be queued
             if self.queue_size == 0 or len(self.queue) < self.queue_size:
@@ -160,31 +152,6 @@ class Node(Module):
         # schedule next arrival
         self.schedule_next_arrival()
 
-    def handle_end_carrier_sensing(self, event):
-        # if channel is free, transmit (carrier sensing)
-        packet_size = self.current_packet_size
-        self.state = Node.IDLE
-        
-        busy = 0
-        for neighbor in self.channel.neighbors[self.get_id()]:
-            if (neighbor.state == Node.TX):
-                busy = 1
-                    
-        self.logger.log_sensing(self, busy)
-        
-        if (busy == 0):
-            self.transmit_packet(packet_size)
-            self.state = Node.TX
-            self.logger.log_state(self, Node.TX)
-        else:
-            if self.queue_size == 0 or len(self.queue) < self.queue_size:
-                # if queue size is infinite or there is still space
-                self.queue.append(packet_size)
-                self.logger.log_queue_length(self, len(self.queue))
-            else:
-                # if there is no space left, we drop the packet and log
-                self.logger.log_queue_drop(self, packet_size)
-
     def handle_start_rx(self, event):
         """
         Handles beginning of a frame reception
@@ -192,37 +159,44 @@ class Node(Module):
         """
         new_packet = event.get_obj()
         if self.state == Node.IDLE:
-            if self.receiving_count == 0:
-                # node is idle: it will try to receive this packet
-                assert(self.current_pkt is None)
-                new_packet.set_state(Packet.PKT_RECEIVING)
-                self.current_pkt = new_packet
-                self.state = Node.RX
-                assert(self.timeout_event is None)
-                # create and schedule the RX timeout
-                
-                self.timeout_event = Event(self.sim.get_time() +
-                                           self.timeout_time, Events.RX_TIMEOUT,
-                                           self, self, None)
-                self.sim.schedule_event(self.timeout_event)
-                self.logger.log_state(self, Node.RX)
+            # reception is successful based on probabilistic model
+            mean = 1 - (self.channel.distance(self.get_posx(), new_packet.get_source_x(), self.get_posy(),
+            new_packet.get_source_y())/self.range)**(1/3)
+            p = Distribution({"distribution" : "bernoulli", "mean" : mean})
+            if (p.get_value() == 1):
+                if self.receiving_count == 0:
+                    # node is idle: it will try to receive this packet
+                    assert(self.current_pkt is None)
+                    new_packet.set_state(Packet.PKT_RECEIVING)
+                    self.current_pkt = new_packet
+                    self.state = Node.RX
+                    assert(self.timeout_event is None)
+                    # create and schedule the RX timeout
+                    self.timeout_event = Event(self.sim.get_time() +
+                                               self.timeout_time, Events.RX_TIMEOUT,
+                                               self, self, None)
+                    self.sim.schedule_event(self.timeout_event)
+                    self.logger.log_state(self, Node.RX)
+                else:
+                    # there is another signal in the air but we are IDLE. this
+                    # happens if we start receiving a frame while transmitting
+                    # another. when we are done with the transmission we assume we
+                    # are not able to detect that there is another frame in the air
+                    # (we are not doing carrier sensing). In this case we assume we
+                    # are not able to detect the new one and set that to corrupted
+                    new_packet.set_state(Packet.PKT_COLLIDED)
             else:
-                # there is another signal in the air but we are IDLE. this
-                # happens if we start receiving a frame while transmitting
-                # another. when we are done with the transmission we assume we
-                # are not able to detect that there is another frame in the air
-                # (we are not doing carrier sensing). In this case we assume we
-                # are not able to detect the new one and set that to corrupted
+                # packet corrupted
                 new_packet.set_state(Packet.PKT_CORRUPTED)
         else:
             # node is either receiving or transmitting
             if self.state == Node.RX and self.current_pkt is not None:
                 # the frame we are currently receiving is corrupted by a
                 # collision, if we have one
-                self.current_pkt.set_state(Packet.PKT_CORRUPTED)
+                self.current_pkt.set_state(Packet.PKT_COLLIDED)
             # the same holds for the new incoming packet. either if we are in
             # the RX, TX, or PROC state, we won't be able to decode it
-            new_packet.set_state(Packet.PKT_CORRUPTED)
+            new_packet.set_state(Packet.PKT_COLLIDED)
         # in any case, we schedule a new event to handle the end of this frame
         end_rx = Event(self.sim.get_time() + new_packet.get_duration(),
                        Events.END_RX, self, self, new_packet)
@@ -332,7 +306,7 @@ class Node(Module):
         assert(self.current_pkt is None)
         duration = packet_size * 8 / self.datarate
         # transmit packet
-        packet = Packet(packet_size, duration)
+        packet = Packet(packet_size, duration, self.get_posx(), self.get_posy())
         self.channel.start_transmission(self, packet)
         # schedule end of transmission
         end_tx = Event(self.sim.get_time() + duration, Events.END_TX, self,

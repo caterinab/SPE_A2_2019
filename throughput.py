@@ -34,7 +34,7 @@ while (i <= 1510):
             if event == "1":
                 throughput[node-1] = throughput[node-1] + p_size
                 received[node-1] = received[node-1] + 1
-            elif event == "2":
+            elif event == "8":
                 collided[node-1] = collided[node-1] + 1
             elif event == "3":
                 generated[node-1] = generated[node-1] + 1

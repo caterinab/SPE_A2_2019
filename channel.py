@@ -60,14 +60,14 @@ class Channel(Module):
         # recompute the neighbors of all nodes considering the new node as well
         self.recompute_neighbors(node)
 
-    def distance(self, a, b):
+    def distance(self, ax, bx, ay, by):
         """
         Computes the two-dimensional Euclidean distance between nodes a and b
         :param a: first node
         :param b: second node
         """
-        return math.sqrt(math.pow(a.get_posx() - b.get_posx(), 2) +
-                         math.pow(a.get_posy() - b.get_posy(), 2))
+        return math.sqrt(math.pow(ax - bx, 2) +
+                         math.pow(ay - by, 2))
 
     def recompute_neighbors(self, new_node):
         """
@@ -80,7 +80,7 @@ class Channel(Module):
         for n in self.nodes:
             # if the node n is within communication range of the newest node
             if n.get_id() != new_node.get_id() and \
-               self.distance(n, new_node) < self.range:
+               self.distance(n.get_posx(), new_node.get_posx(), n.get_posy(), new_node.get_posy()) < self.range:
                 # add n to the neighbors of the new node and vice versa
                 new_node_neighbors.append(n)
                 self.neighbors[n.get_id()].append(new_node)
@@ -93,10 +93,10 @@ class Channel(Module):
         about such event
         :param source_node: node that starts the transmission
         :param packet: packet being transmitted
-        """
+        """        
         for neighbor in self.neighbors[source_node.get_id()]:
             # compute propagation delay: distance / speed of light
-            propagation_delay = self.distance(source_node, neighbor) /\
+            propagation_delay = self.distance(source_node.get_posx(), neighbor.get_posx(), source_node.get_posy(), neighbor.get_posy()) /\
                                 Channel.SOL
             # generate and schedule START_RX event at receiver
             # be sure to make a copy of the packet and not pass the same
